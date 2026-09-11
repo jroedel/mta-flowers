@@ -46,13 +46,21 @@ write_files:
       deploy ALL=(root) NOPASSWD: /usr/local/sbin/mta-flowers-install apply
       deploy ALL=(root) NOPASSWD: /usr/local/sbin/mta-flowers-install rollback
 
-  # Password authentication off, root login off. The instance is key-only.
+  # Password authentication off, root login key-only.
+  #
+  # The name matters and 99- is WRONG. sshd takes the FIRST occurrence of a
+  # directive, not the last, and Ubuntu ships 50-cloud-init.conf containing
+  # "PasswordAuthentication yes". A 99- file sorts after it, parses fine,
+  # reports no error, and changes nothing -- which is how this machine spent
+  # its first minutes accepting passwords from the internet. 00- sorts first
+  # and therefore wins. scripts/check-server asserts the result rather than
+  # the file, because the file being present proves nothing.
   #
   # Port 22 is open in the firewall rather than opened per-deploy. Closing it
   # would need a Vultr API key in CI, and a Vultr key is account-wide and
   # full-access -- trading a real credential for a closed port on a host with
   # nothing to guess is the wrong way round.
-  - path: /etc/ssh/sshd_config.d/99-mta-flowers.conf
+  - path: /etc/ssh/sshd_config.d/00-mta-flowers.conf
     permissions: "0644"
     content: |
       PasswordAuthentication no

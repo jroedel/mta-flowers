@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+#
+# Ask the server what it is actually doing, over ssh as root.
+#
+#     scripts/check-server
+#
+# Every check here asserts an EFFECTIVE state rather than the presence of a
+# file that ought to produce it. That distinction is the reason this script
+# exists: deploy/cloud-init.yaml wrote a correct-looking
+# sshd_config.d/99-mta-flowers.conf containing "PasswordAuthentication no",
+# sshd parsed it without complaint, and the machine went on accepting
+# passwords from the internet -- because sshd takes the FIRST occurrence of a
+# directive and Ubuntu's own 50-cloud-init.conf sorts earlier.
+#
+# A check that had grepped the file would have passed. `sshd -T` is what
+# caught it.
+
+set -uo pipefail
+
+env_file=${MTA_FLOWERS_ENV:-$HOME/.config/mta-flowers.env}
+# shellcheck disable=SC1090
+set -a; . "$env_file" 2>/dev/null; set +a
+: "${DEPLOY_HOST:?set DEPLOY_HOST in $env_file}"
+
+ok_count=0 fail_count=0
+ok()     { printf '  \033[32mok\033[0m      %s\n' "$*"; ok_count=$((ok_count + 1)); }
+failed() { printf '  \033[31mFAILED\033[0m  %s\n' "$*"; fail_count=$((fail_count + 1)); }
+
+report=$(ssh -o ConnectTimeout=15 -o BatchMode=yes "root@${DEPLOY_HOST}" 'bash -s' <<'REMOTE' 2>/dev/null
+sshd -T 2>/dev/null | grep -E "^(passwordauthentication|permitrootlogin|kbdinteractiveauthentication) "
+echo "caddy=$(systemctl is-active caddy)"
+echo "app=$(systemctl is-active mta-flowers 2>/dev/null || echo inactive)"
+echo "appenabled=$(systemctl is-enabled mta-flowers 2>/dev/null || echo disabled)"
+echo "envmode=$(stat -c '%a %U' /etc/mta-flowers.env 2>/dev/null || echo missing)"
+echo "dbdir=$(stat -c '%a %U' /var/lib/mta-flowers 2>/dev/null || echo missing)"
+echo "ufw=$(ufw status | head -1 | awk '{print $2}')"
+echo "ports=$(ss -lntp 2>/dev/null | awk 'NR>1{print $4}' | tr '\n' ' ')"
+REMOTE
+)
+
+if [ -z "$report" ]; then
+	echo "could not reach root@${DEPLOY_HOST}" >&2
+	exit 1
+fi
+
+get() { grep -m1 "^$1" <<<"$report" | cut -d= -f2- | tr -d ' '; }
+getssh() { grep -m1 "^$1 " <<<"$report" | awk '{print $2}'; }
+
+printf '\n\033[1mssh\033[0m\n'
+[ "$(getssh passwordauthentication)" = no ] \
+	&& ok "passwords are refused" \
+	|| failed "PASSWORD AUTHENTICATION IS ON -- check the sort order of /etc/ssh/sshd_config.d/*"
+[ "$(getssh kbdinteractiveauthentication)" = no ] \
+	&& ok "keyboard-interactive is refused" \
+	|| failed "keyboard-interactive authentication is on"
+case "$(getssh permitrootlogin)" in
+	without-password|prohibit-password|no) ok "root is key-only" ;;
+	*) failed "root login is $(getssh permitrootlogin)" ;;
+esac
+
+printf '\n\033[1mservices\033[0m\n'
+[ "$(get caddy)" = active ] && ok "caddy is running" || failed "caddy is $(get caddy)"
+[ "$(get app)" = active ] && ok "mta-flowers is running" || failed "mta-flowers is $(get app) -- has it been deployed?"
+[ "$(get appenabled)" = enabled ] && ok "mta-flowers starts at boot" || failed "mta-flowers is $(get appenabled) -- it would not come back after a reboot"
+
+printf '\n\033[1mfiles\033[0m\n'
+[ "$(get envmode)" = "600root" ] && ok "/etc/mta-flowers.env is 0600 root" || failed "/etc/mta-flowers.env is $(get envmode)"
+[ "$(get dbdir)" = "750flowers" ] && ok "/var/lib/mta-flowers is 0750 flowers" || failed "/var/lib/mta-flowers is $(get dbdir)"
+
+printf '\n\033[1mnetwork\033[0m\n'
+[ "$(get ufw)" = active ] && ok "the firewall is on" || failed "the firewall is $(get ufw)"
+# The app must not be reachable except through Caddy.
+if grep -q "ports=.*0.0.0.0:8080" <<<"$report"; then
+	failed "the app is listening on every interface, not just loopback"
+else
+	ok "the app is not listening on a public interface"
+fi
+
+printf '\n%s ok, %s failed\n' "$ok_count" "$fail_count"
+[ "$fail_count" -eq 0 ] || exit 1
