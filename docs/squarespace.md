@@ -2,30 +2,21 @@
 
 For whoever has edit access to `schoenstatt-austin.us`. About ten minutes.
 
-This is the same procedure as last year's guide, because the widget kept last
-year's names on purpose — `FLOWERS_API`, `FLOWERS_EVENT_ID` and the
-`flowers-widget` div. **The only thing that changes is two strings**, so if you
-still have the old code block, editing it in place also works.
+**One snippet, in one place.** Last year's guide had two — a header block
+setting `window.FLOWERS_API`, and the widget itself. The header block is gone:
+the script now works out where its own API is from the URL it was loaded from.
+That was not a tidy-up. The two-snippet version was tried on the live site
+first, the header half did not take, and the page showed "the flowers widget
+is not configured yet" with nothing to say why. A step that can half-succeed
+silently is a step worth deleting.
 
-## Step 1: the page header
+If you already pasted the old header block, you can leave it — it is still
+honoured — but you can also delete it and nothing changes.
 
-1. Open the page where the widget should appear, and click **Edit**.
-2. In the left sidebar: **Settings** → **Advanced** → **Page Header Code Injection**.
-3. Paste this exactly:
+## Add the widget
 
-```html
-<script>
-  window.FLOWERS_API = "https://flowers.schoenstatt.link/";
-  window.FLOWERS_EVENT_ID = "church-flowers-2026-10-17";
-</script>
-```
-
-4. **Save**.
-
-## Step 2: the widget itself
-
-1. Still editing the page, click **+** where the widget should go.
-2. Choose **Code** (it may be under **More**).
+1. Open the page where the widget should appear and click **Edit**.
+2. Click **+** where you want it, and choose **Code** (it may be under **More**).
 3. Paste this exactly:
 
 ```html
@@ -37,7 +28,14 @@ still have the old code block, editing it in place also works.
 
 4. **Apply**, then **Save**.
 
-## Step 3: check it
+That is the whole installation. The widget draws its own card, name box, button
+and count, and it reads the date and the instructions from the server — so
+changing them on the admin page changes them on the site with no edit here.
+
+Keep your own **FLOWERS FOR THE BLESSED MOTHER** heading and the paragraph
+under it as ordinary Squarespace text. The widget is only the green card.
+
+## Check it
 
 1. **Preview** the page. The green card should appear with a name box and the
    "I'll bring flowers" button.
@@ -49,10 +47,10 @@ still have the old code block, editing it in place also works.
 ## What changed from last year, and why
 
 Last year the script came from CloudFront and the API from AWS API Gateway.
-Both are now the same server, `flowers.schoenstatt.link`, which is why there is
-one hostname in this guide instead of two.
+Both are now the same server, `flowers.schoenstatt.link` — which is also why
+the widget can find itself and the header snippet is gone.
 
-**One real behavioural change.** Last year's widget remembered you with a
+**One real behavioural change for guests.** Last year's widget remembered you with a
 cookie. A cookie set by the API's domain inside a page on
 `schoenstatt-austin.us` is a *third-party* cookie — Safari blocks those by
 default and Chrome restricts them, so "you already signed up" worked for some

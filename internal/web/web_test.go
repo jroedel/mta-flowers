@@ -26,7 +26,7 @@ func newServer(t *testing.T) http.Handler {
 
 	// An unconfigured Sender, so no test ever sends mail. SendAsync logs and
 	// returns, which is exactly what a development machine does.
-	srv, err := web.New(st, mail.Sender{}, web.Config{
+	srv, err := web.New(st, mail.Sender{Log: discardLogger()}, web.Config{
 		PublicURL:        "https://flowers.schoenstatt.link",
 		AllowedOrigins:   []string{squarespace},
 		AdminEmails:      []string{"frjeff@schoenstatt.us"},
@@ -377,5 +377,102 @@ func TestANameCannotBecomeMarkupOnTheDashboard(t *testing.T) {
 	}
 	if !strings.Contains(w2.Body.String(), "&lt;script&gt;") {
 		t.Error("the name does not appear escaped either; is it on the page at all?")
+	}
+}
+
+// Firefox sends the literal string "null" as the Origin of a same-origin form
+// post when the page carries a strict Referrer-Policy, and sends no Referer to
+// correlate it with. The first version of sameOrigin compared that against the
+// real URL and refused -- so the organiser signing in on the real page was
+// told the form had not come from it.
+//
+// This is a lock-out bug rather than a hole, which makes it the worse kind:
+// nothing is exposed, and the person who needs to fix it cannot get in.
+func TestFirefoxCanSignIn(t *testing.T) {
+	h := newServer(t)
+
+	r := httptest.NewRequest(http.MethodPost, "/admin/link",
+		strings.NewReader("email=frjeff@schoenstatt.us"))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	// Exactly what Firefox 155 sent, taken from the server's access log.
+	r.Header.Set("Origin", "null")
+	r.Header.Set("Sec-Fetch-Site", "same-origin")
+	r.Header.Set("Sec-Fetch-Mode", "navigate")
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+
+	if w.Code == http.StatusForbidden {
+		t.Fatal("a same-origin sign-in from Firefox was refused as cross-site")
+	}
+	if w.Code != http.StatusSeeOther {
+		t.Errorf("status = %d, want 303", w.Code)
+	}
+}
+
+// Sec-Fetch-Site is set by the browser and cannot be forged by a page, so it
+// must be believed over an Origin header that disagrees with it.
+func TestACrossSiteFetchIsStillRefusedHoweverItLabelsItself(t *testing.T) {
+	cases := map[string]map[string]string{
+		"cross-site":                 {"Sec-Fetch-Site": "cross-site"},
+		"same-site but another host": {"Sec-Fetch-Site": "same-site"},
+		"a forged Origin with an honest Sec-Fetch-Site": {
+			"Sec-Fetch-Site": "cross-site",
+			"Origin":         "https://flowers.schoenstatt.link",
+		},
+		"no fetch metadata, wrong origin":  {"Origin": "https://evil.example.org"},
+		"no fetch metadata, wrong referer": {"Referer": "https://evil.example.org/x"},
+	}
+
+	for what, headers := range cases {
+		r := httptest.NewRequest(http.MethodPost, "/admin/link",
+			strings.NewReader("email=frjeff@schoenstatt.us"))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		for k, v := range headers {
+			r.Header.Set(k, v)
+		}
+
+		w := httptest.NewRecorder()
+		h := newServer(t)
+		h.ServeHTTP(w, r)
+
+		if w.Code != http.StatusForbidden {
+			t.Errorf("%s: status = %d, want 403", what, w.Code)
+		}
+	}
+}
+
+// The token is in the query string of the link. The policy has to keep it away
+// from other people's servers -- but no-referrer is what produced the Firefox
+// lock-out above, so the weaker policy that still does the job is the right
+// one and is worth pinning.
+func TestTheReferrerPolicyProtectsTheTokenWithoutBreakingSignIn(t *testing.T) {
+	h := newServer(t)
+
+	r := httptest.NewRequest(http.MethodGet, "/admin", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+
+	got := w.Header().Get("Referrer-Policy")
+	if got != "same-origin" {
+		t.Errorf("Referrer-Policy = %q, want same-origin (no-referrer makes Firefox send Origin: null)", got)
+	}
+}
+
+// The Squarespace page carries one snippet, not two. If the widget ever needs
+// telling where its API is again, the setup grows a step that can silently
+// half-succeed -- which is how it failed the first time it went on the site.
+func TestTheWidgetFindsItsOwnApi(t *testing.T) {
+	h := newServer(t)
+
+	r := httptest.NewRequest(http.MethodGet, "/flowers.js", nil)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+
+	body := w.Body.String()
+	for _, want := range []string{"document.currentScript", "ownOrigin()"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the widget no longer works out its own origin: missing %q", want)
+		}
 	}
 }
