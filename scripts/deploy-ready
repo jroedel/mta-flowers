@@ -1,0 +1,262 @@
+#!/usr/bin/env bash
+#
+# One green light before pushing to main, or a list of what is not ready.
+#
+#     make deploy-ready
+#
+# main deploys. A merge is a release, so this is the thing to run before one.
+# It answers, in order: does the code pass its own checks; will it build the
+# binary the server runs; do the deploy assets exist and parse; is the
+# credential file on this machine complete; is GitHub armed to deploy; and is
+# the server actually there.
+#
+# # Three states, not two
+#
+#   ok        checked and correct
+#   not yet   a step nobody has done, which is not a failure
+#   FAILED    configured and wrong, which is
+#
+# The distinction is the whole point. A half-built deployment reporting red
+# teaches you to ignore red. Green needs no failures AND nothing outstanding,
+# so it stays dark until this is genuinely finished.
+#
+# # It prints no secrets
+#
+# A value is shown as the first eight hex of its SHA-256, which is enough to
+# compare this machine's copy against GitHub's -- the only question worth
+# asking -- and worth nothing to anybody who reads it over your shoulder.
+
+set -uo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+cd "$root" || exit 1
+
+env_file=${MTA_FLOWERS_ENV:-$HOME/.config/mta-flowers.env}
+
+ok_count=0 pending_count=0 fail_count=0
+
+ok()      { printf '  \033[32mok\033[0m       %s\n' "$*"; ok_count=$((ok_count + 1)); }
+pending() { printf '  \033[33mnot yet\033[0m  %s\n' "$*"; pending_count=$((pending_count + 1)); }
+failed()  { printf '  \033[31mFAILED\033[0m   %s\n' "$*"; fail_count=$((fail_count + 1)); }
+section() { printf '\n\033[1m%s\033[0m\n' "$*"; }
+
+# fingerprint prints a stable short hash of a value, never the value.
+fingerprint() { printf '%s' "$1" | sha256sum | cut -c1-8; }
+
+# ---------------------------------------------------------------------------
+section "The code"
+
+if [ -z "$(gofmt -s -l . 2>/dev/null)" ]; then
+	ok "gofmt clean"
+else
+	failed "not gofmt-clean: $(gofmt -s -l . | tr '\n' ' ')-- run: make fmt"
+fi
+
+if go vet ./... >/dev/null 2>&1; then
+	ok "go vet"
+else
+	failed "go vet reports findings -- run: go vet ./..."
+fi
+
+if ! command -v staticcheck >/dev/null 2>&1; then
+	pending "staticcheck is not installed -- run: make dev-tools"
+elif staticcheck ./... >/dev/null 2>&1; then
+	ok "staticcheck"
+else
+	failed "staticcheck reports findings -- run: staticcheck ./..."
+fi
+
+if go test ./... >/dev/null 2>&1; then
+	ok "tests pass"
+else
+	failed "tests fail -- run: go test ./..."
+fi
+
+# ---------------------------------------------------------------------------
+section "The binary the server will run"
+
+# An entrypoint at all. Until there is a main package there is nothing to
+# deploy, and every check below it is answering a question about nothing.
+if go list -f '{{.Name}}' . 2>/dev/null | grep -qx main; then
+	ok "there is a main package"
+
+	bin=$(mktemp -u /tmp/mta-flowers-preflight.XXXXXX)
+	if CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o "$bin" . 2>/dev/null; then
+		ok "builds for linux/amd64"
+
+		# The failure this catches does not appear until the binary is on the
+		# server: an ordinary build links against the builder's glibc and dies
+		# with "GLIBC_2.xx not found" on a machine with a different one.
+		if file "$bin" 2>/dev/null | grep -q 'statically linked'; then
+			ok "the binary is static ($(du -h "$bin" | cut -f1))"
+		else
+			failed "the binary is dynamically linked; it will not run on the server"
+		fi
+		rm -f "$bin"
+	else
+		failed "the linux/amd64 build fails -- run: make release GOOS=linux GOARCH=amd64"
+	fi
+else
+	pending "no main package yet, so there is no binary to deploy"
+fi
+
+# ---------------------------------------------------------------------------
+section "Deploy assets"
+
+for f in deploy/Caddyfile deploy/mta-flowers.service deploy/mta-flowers-install; do
+	if [ -e "$f" ]; then ok "$f"; else pending "$f is missing"; fi
+done
+
+if [ -e deploy/Caddyfile ]; then
+	if command -v caddy >/dev/null 2>&1; then
+		if caddy validate --config deploy/Caddyfile --adapter caddyfile >/dev/null 2>&1; then
+			ok "the Caddyfile parses"
+		else
+			failed "the Caddyfile does not parse -- run: caddy validate --config deploy/Caddyfile --adapter caddyfile"
+		fi
+	else
+		pending "caddy is not installed here, so the Caddyfile is unchecked"
+	fi
+fi
+
+if [ -e deploy/mta-flowers.service ]; then
+	if command -v systemd-analyze >/dev/null 2>&1; then
+		# "is not executable" is expected: the binary lives on the server.
+		out=$(systemd-analyze verify deploy/mta-flowers.service 2>&1 | grep -v 'is not executable')
+		if [ -z "$out" ]; then
+			ok "the systemd unit verifies"
+		else
+			failed "the systemd unit has problems: $out"
+		fi
+	else
+		pending "systemd-analyze is not here, so the unit is unchecked"
+	fi
+fi
+
+for f in .github/workflows/ci.yml .github/workflows/deploy.yml; do
+	if [ -e "$f" ]; then ok "$f"; else pending "$f is missing -- a push to main would deploy nothing"; fi
+done
+
+# ---------------------------------------------------------------------------
+section "Credentials on this machine ($env_file)"
+
+if [ ! -e "$env_file" ]; then
+	failed "$env_file is missing"
+else
+	mode=$(stat -c '%a' "$env_file")
+	if [ "$mode" = 600 ]; then
+		ok "mode 0600"
+	else
+		failed "mode is $mode, want 600 -- run: chmod 600 $env_file"
+	fi
+
+	# Sourced in a subshell so nothing leaks into this one beyond the names
+	# asked for below.
+	# shellcheck disable=SC1090
+	set -a; . "$env_file" 2>/dev/null; set +a
+
+	need() {
+		local name=$1 why=$2 value=${!1:-}
+		if [ -n "$value" ]; then
+			ok "$name is set (${#value} chars, $(fingerprint "$value"))"
+		else
+			pending "$name is empty -- $why"
+		fi
+	}
+
+	need SMTP_HOST      "where notifications are submitted"
+	need SMTP_USERNAME  "the mailbox they are sent as"
+	need SMTP_PASSWORD  "without it no notification and no magic link is sent"
+	need MAIL_FROM      "the From: header; must stay on schoenstatt.link"
+	need NOTIFY_RECIPIENTS "nobody would be told when somebody commits"
+	need ADMIN_EMAILS   "nobody could sign in to the admin pages"
+	need ADMIN_FALLBACK_PASSWORD "the way in on the day mail is down"
+	need PUBLIC_HOSTNAME "the hostname Caddy gets a certificate for"
+	need DEPLOY_HOST    "the workflow would have nowhere to ship to"
+	need DEPLOY_SSH_KEY "the workflow could not log in"
+	need DEPLOY_KNOWN_HOSTS "the workflow refuses an unpinned host key"
+	need VULTR_API_KEY  "the instance cannot be provisioned"
+fi
+
+# ---------------------------------------------------------------------------
+section "GitHub, armed to deploy"
+
+if ! command -v gh >/dev/null 2>&1; then
+	pending "the gh CLI is not installed, so GitHub is unchecked"
+elif ! gh auth status >/dev/null 2>&1; then
+	pending "gh is not signed in -- run: gh auth login"
+elif ! git remote get-url origin >/dev/null 2>&1; then
+	pending "this repository has no origin remote -- it is not on GitHub yet"
+elif ! repo=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null); then
+	failed "origin is set but gh cannot see the repository"
+else
+	ok "origin is $repo"
+
+	vars=$(gh variable list --json name -q '.[].name' 2>/dev/null)
+	if grep -qx PUBLIC_HOSTNAME <<<"$vars"; then
+		ok "the PUBLIC_HOSTNAME variable is set"
+	else
+		pending "the PUBLIC_HOSTNAME variable is unset -- deploy.yml skips itself without it"
+	fi
+
+	secrets=$(gh secret list --json name -q '.[].name' 2>/dev/null)
+	for name in DEPLOY_HOST DEPLOY_SSH_KEY DEPLOY_KNOWN_HOSTS; do
+		if grep -qx "$name" <<<"$secrets"; then
+			ok "the $name secret is set"
+		else
+			pending "the $name secret is unset"
+		fi
+	done
+fi
+
+# ---------------------------------------------------------------------------
+section "The server"
+
+host=${PUBLIC_HOSTNAME:-}
+target=${DEPLOY_HOST:-}
+
+if [ -z "$host" ]; then
+	pending "PUBLIC_HOSTNAME is unset, so there is nothing to look up"
+else
+	resolved=$(dig +short A "$host" 2>/dev/null | tail -1)
+	if [ -z "$resolved" ]; then
+		# No A record means no server, so asking it a question would only
+		# produce a second way of saying the same thing.
+		pending "$host does not resolve yet -- the A record is not published"
+		pending "https://$host/healthz unchecked until the name resolves"
+	else
+		if [ -n "$target" ] && [ "$resolved" != "$target" ]; then
+			failed "$host resolves to $resolved but DEPLOY_HOST is $target"
+		else
+			ok "$host resolves to $resolved"
+		fi
+
+		# curl writes its own "000" when it cannot connect and also exits
+		# non-zero, so a "|| echo 000" fallback appends a second one and the
+		# case below matches neither. Let the exit status be the signal.
+		code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 \
+			"https://$host/healthz" 2>/dev/null)
+		case "${code:-000}" in
+			200) ok "https://$host/healthz answers 200" ;;
+			000) pending "https://$host/healthz does not answer -- no server there yet" ;;
+			*)   failed "https://$host/healthz answers $code" ;;
+		esac
+	fi
+fi
+
+# ---------------------------------------------------------------------------
+printf '\n'
+printf '%s ok, %s not yet, %s failed\n' "$ok_count" "$pending_count" "$fail_count"
+
+if [ "$fail_count" -gt 0 ]; then
+	printf '\033[31mNot ready: something is configured and wrong.\033[0m Fix the FAILED lines.\n'
+	exit 1
+fi
+
+if [ "$pending_count" -gt 0 ]; then
+	printf '\033[33mNot ready yet: %s steps outstanding.\033[0m Nothing is broken.\n' "$pending_count"
+	printf 'Pushing to main is safe -- it just will not deploy anything.\n'
+	exit 2
+fi
+
+printf '\033[32mReady. A push to main will build, ship and health-check itself.\033[0m\n'

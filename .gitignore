@@ -1,0 +1,5 @@
+# Credentials never live in this repository. See docs/secrets.md.
+*.env
+!*.env.example
+*.key
+*.pem
