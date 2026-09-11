@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+#
+# Render deploy/cloud-init.yaml into the user-data a new instance boots with.
+#
+#     scripts/render-cloud-init > user-data.yaml
+#
+# Two things are substituted, and both are substituted rather than committed
+# because they must not live in git: the deploy account's PUBLIC key, and the
+# installer script.
+#
+# The installer is inlined from deploy/mta-flowers-install so that file stays
+# the single source of truth. Pasting it into the YAML by hand would work
+# exactly once and then quietly drift.
+
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+pubkey=${DEPLOY_PUBLIC_KEY:-$HOME/.ssh/mta-flowers-deploy.pub}
+
+test -f "$pubkey" || { echo "no deploy public key at $pubkey" >&2; exit 1; }
+
+python3 - "$root" "$pubkey" <<'PY'
+import pathlib, sys, textwrap
+
+root, pubkey = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+
+tpl = (root / "deploy/cloud-init.yaml").read_text()
+installer = (root / "deploy/mta-flowers-install").read_text()
+
+# Six spaces: "content: |" sits at four, so the block scalar is at six.
+tpl = tpl.replace("INSTALLER_GOES_HERE", textwrap.indent(installer, " " * 6).rstrip())
+tpl = tpl.replace("DEPLOY_PUBLIC_KEY_GOES_HERE", pubkey.read_text().strip())
+
+for leftover in ("INSTALLER_GOES_HERE", "DEPLOY_PUBLIC_KEY_GOES_HERE"):
+    if leftover in tpl:
+        sys.exit(f"the {leftover} placeholder survived substitution")
+
+sys.stdout.write(tpl)
+PY
