@@ -60,8 +60,16 @@ apply() {
 	install -m 0755 "$staging/mta-flowers-install" /usr/local/sbin/mta-flowers-install
 
 	systemctl daemon-reload
+
+	# enable as well as restart. Without it the service runs now and does not
+	# come back after a reboot -- and a Vultr instance reboots for reasons
+	# nobody asked about, so the widget would be dead with every check that
+	# only asks "is it running" still green. It was exactly that for the first
+	# deploy of this project; scripts/check-server asks is-enabled for that
+	# reason.
+	systemctl enable mta-flowers >/dev/null 2>&1 || true
 	systemctl restart mta-flowers
-	log "restarted"
+	log "restarted, and enabled at boot"
 
 	if ! wait_until_healthy; then
 		log "the new binary does not answer $health -- rolling back"
