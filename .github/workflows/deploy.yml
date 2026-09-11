@@ -1,0 +1,172 @@
+# Build the binary, hand it to the machine, restart the service, and check that
+# something answers -- rolling back if it does not.
+#
+# main deploys, so a merge is a release.
+#
+# This workflow holds exactly one credential: the deploy key. What that key can
+# do is bounded by /etc/sudoers.d/mta-flowers-deploy -- one script, two
+# arguments -- and by the sshd Match block in deploy/cloud-init.yaml, which
+# denies it port forwarding, so a leaked key cannot tunnel to the app on
+# loopback and reach the admin pages from inside. It cannot reach the Vultr
+# account: that key never leaves the operator's machine.
+#
+# The residual risk, stated rather than hidden: whoever holds the deploy key
+# can run code on this box. eumaeus closes that by signing its bundle with
+# cosign and verifying it in the installer; this does not, because what is here
+# is a list of names for five weeks on an instance that is then destroyed.
+# See docs/scope.md.
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "docs/**"
+      - "**/*.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deploy at a time. Two runs racing to replace the same binary and restart
+# the same service is not a state worth reasoning about.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    # Nothing to deploy to until the server exists. Skipping keeps this grey
+    # rather than red on every push: a workflow that has always been failing is
+    # a workflow whose failure nobody reads, and this is the one that will one
+    # day fail for a real reason.
+    if: vars.PUBLIC_HOSTNAME != ''
+
+    # Point this at a GitHub environment with required reviewers to put a human
+    # between "merged" and "running". It also scopes the secrets to this job.
+    environment: production
+
+    steps:
+      - name: Check the deployment is configured
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -uo pipefail
+
+          # Every missing name at once. Discovering these one at a time, five
+          # minutes apart, is a bad afternoon. No value is printed, only
+          # whether it is empty.
+          missing=""
+          need() { [ -n "$2" ] || missing="$missing $1"; }
+
+          need DEPLOY_HOST "$DEPLOY_HOST"
+          need DEPLOY_SSH_KEY "$DEPLOY_SSH_KEY"
+          need DEPLOY_KNOWN_HOSTS "$DEPLOY_KNOWN_HOSTS"
+
+          if [ -n "$missing" ]; then
+            echo "PUBLIC_HOSTNAME is set, so this repository expects to deploy,"
+            echo "but these secrets are missing:$missing"
+            exit 1
+          fi
+          echo "configured"
+
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # The tests run again here rather than trusting that CI passed. They are
+      # seconds, and a deploy that can be triggered by hand without also
+      # running them is worth the duplication.
+      - name: Test
+        run: go test -race ./...
+
+      - name: Build
+        run: make release GOOS=linux GOARCH=amd64
+
+      - name: Assemble the bundle
+        env:
+          HOSTNAME_PUBLIC: ${{ vars.PUBLIC_HOSTNAME }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p bundle
+          cp mta-flowers-linux-amd64 bundle/mta-flowers
+          cp deploy/mta-flowers.service deploy/mta-flowers-install bundle/
+
+          # The committed Caddyfile carries a placeholder hostname, because a
+          # repository is a poor place for one deployment's domain name.
+          sed "s/flowers\.example\.org/${HOSTNAME_PUBLIC}/" deploy/Caddyfile > bundle/Caddyfile
+
+          # An "if" rather than "grep && exit": under "set -e" a grep that
+          # finds nothing is a failing command, so the success case would fail
+          # the step.
+          if grep -q "flowers.example.org" bundle/Caddyfile; then
+            echo "the placeholder hostname survived substitution"
+            exit 1
+          fi
+
+          chmod +x bundle/mta-flowers bundle/mta-flowers-install
+          tar czf deploy.tar.gz -C bundle .
+          ls -l deploy.tar.gz
+
+      - name: Install the SSH key and pin the host key
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+
+          # The host key is pinned, and there is no StrictHostKeyChecking=no
+          # anywhere in this file. Accepting an unknown host key means offering
+          # the deploy key to whoever answered.
+          #
+          # Get the value once, from a machine you trust, with:
+          #   ssh-keyscan -t ed25519 your.host
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Ship it
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/id_deploy -o IdentitiesOnly=yes \
+            deploy.tar.gz "deploy@${HOST}:/home/deploy/"
+          ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes \
+            "deploy@${HOST}" sudo /usr/local/sbin/mta-flowers-install apply
+
+      # The installer has already gated on /healthz over loopback and rolled
+      # back if it failed. This asks the same question from outside, over the
+      # real hostname, so Caddy and the certificate are in the path too --
+      # pinned with --resolve to the machine just deployed to, so a stale
+      # resolver cannot fail a check about a server that is fine.
+      - name: Check it answers through Caddy, or roll back
+        env:
+          HOSTNAME_PUBLIC: ${{ vars.PUBLIC_HOSTNAME }}
+          HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5 6; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 \
+              --resolve "${HOSTNAME_PUBLIC}:443:${HOST}" \
+              "https://${HOSTNAME_PUBLIC}/healthz" || echo 000)
+            echo "attempt ${attempt}: /healthz HTTP ${code}"
+            [ "$code" = 200 ] && exit 0
+            sleep 5
+          done
+
+          echo "the app does not answer healthy through Caddy; rolling back"
+          ssh -i ~/.ssh/id_deploy -o IdentitiesOnly=yes \
+            "deploy@${HOST}" sudo /usr/local/sbin/mta-flowers-install rollback || true
+          exit 1

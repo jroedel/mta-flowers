@@ -40,7 +40,7 @@ replaced is the hosting, not the design.
 | Commit to bringing flowers | name → stored → notification sent |
 | Cancel a commitment | last year sent a "Flower Commitment Canceled" email with a running count, so it existed |
 | Live total count | the line under the button; it is what pulls people toward the goal |
-| One signup per browser | cookie, as last year. Politeness, not enforcement — trivially bypassed and that is fine |
+| One signup per browser | a token in `localStorage`, not a cookie — see below. Politeness, not enforcement |
 | Notification email per commitment | to a few named people, on both commit and cancel |
 | Admin sign-in by magic link | no password to set, lose or share; see below |
 | Admin: change the date, reset the count, remove duplicates | the three things that actually go wrong during an event |
@@ -102,6 +102,20 @@ avoiding when the deadline is fixed by a feast day.
 Note this is a *web* subdomain only. `EMAIL-INFRASTRUCTURE.md` records that
 subdomains of `schoenstatt.link` do **not** get mail for free — Exim rejects
 them — but nothing here needs to receive mail at that name.
+
+### The one behavioural change from last year
+
+Last year's widget remembered a guest with a cookie. A cookie set by this
+server inside a page on `schoenstatt-austin.us` is a **third-party cookie**:
+blocked by default in Safari, restricted in Chrome. The "you already signed up"
+memory would work for some guests and not others, with no pattern anybody could
+explain — and the failure is invisible, because a guest who is not remembered
+simply signs up twice.
+
+So the widget generates a random token and keeps it in `localStorage`, which is
+first-party to the Squarespace page. It is not a credential: it identifies a
+browser to itself, it is trivially changed, and it guards nothing but a
+double-tap.
 
 ## The Squarespace side
 
@@ -254,4 +268,5 @@ destroyed — that is the only copy.
 
 ## Related
 
+- [`squarespace.md`](squarespace.md) — the setup guide to hand to whoever edits the site
 - `/opt/projects/EMAIL-INFRASTRUCTURE.md` — the mail facts this depends on

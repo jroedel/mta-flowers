@@ -1,0 +1,108 @@
+{{define "dashboard.html"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Flowers — {{.Count}} committed</title>
+{{template "style.html"}}
+</head>
+<body>
+<main>
+  <header class="bar">
+    <h1>Flowers for the Blessed Mother</h1>
+    <form method="post" action="/admin/signout">
+      <button type="submit" class="quiet">Sign out</button>
+    </form>
+  </header>
+
+  {{if .Notice}}<p class="notice">{{.Notice}}</p>{{end}}
+  {{if .Problem}}<p class="problem">{{.Problem}}</p>{{end}}
+  {{if not .MailWorking}}
+    <p class="problem">
+      Email is not configured, so nobody is being notified when people sign up.
+      The list below is still correct.
+    </p>
+  {{end}}
+
+  <p class="count"><strong>{{.Count}}</strong> committed of {{.Event.Goal}}</p>
+
+  <section>
+    <h2>The event</h2>
+    <form method="post" action="/admin/event" class="stack">
+      <label for="date">Date</label>
+      <input type="date" id="date" name="date" value="{{.DateValue}}" required>
+
+      <label for="goal">How many people to ask for</label>
+      <input type="number" id="goal" name="goal" value="{{.Event.Goal}}" min="1" required>
+
+      <label for="instructions">What guests are told</label>
+      <textarea id="instructions" name="instructions" rows="3" required>{{.Event.Instructions}}</textarea>
+
+      <button type="submit">Save</button>
+    </form>
+  </section>
+
+  <section>
+    <h2>Commitments <a class="quiet-link" href="/admin/export.csv">Download CSV</a></h2>
+
+    {{if .Active}}
+    <table>
+      <thead><tr><th>Name</th><th>When</th><th></th></tr></thead>
+      <tbody>
+      {{range .Active}}
+        <tr{{if index $.Duplicates .ID}} class="dup"{{end}}>
+          <td>{{.Name}}{{if index $.Duplicates .ID}} <span class="tag">possible duplicate</span>{{end}}</td>
+          <td class="when">{{localTime .CreatedAt}}</td>
+          <td>
+            <form method="post" action="/admin/remove">
+              <input type="hidden" name="id" value="{{.ID}}">
+              <button type="submit" class="quiet">Remove</button>
+            </form>
+          </td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+    {{else}}
+      <p class="sub">Nobody has signed up yet.</p>
+    {{end}}
+  </section>
+
+  {{if .Removed}}
+  <section>
+    <h2>Removed</h2>
+    <p class="sub">Nothing is ever deleted. Put any of these back.</p>
+    <table>
+      <tbody>
+      {{range .Removed}}
+        <tr class="gone">
+          <td>{{.Name}}</td>
+          <td class="when">{{localTime .CreatedAt}}</td>
+          <td>
+            <form method="post" action="/admin/restore">
+              <input type="hidden" name="id" value="{{.ID}}">
+              <button type="submit" class="quiet">Put back</button>
+            </form>
+          </td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+  </section>
+  {{end}}
+
+  <section class="danger">
+    <h2>Reset the count</h2>
+    <p class="sub">
+      Moves every commitment to the Removed list above, so the count starts at
+      zero. Nothing is lost and each one can be put back.
+    </p>
+    <form method="post" action="/admin/reset"
+          onsubmit="return confirm('Set the count back to zero? Everyone moves to the Removed list and can be put back.')">
+      <button type="submit" class="danger-btn">Reset the count to zero</button>
+    </form>
+  </section>
+</main>
+</body>
+</html>{{end}}

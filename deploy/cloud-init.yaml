@@ -1,0 +1,94 @@
+#cloud-config
+#
+# First boot of the Vultr instance. It creates the two accounts, installs
+# Caddy, and puts the installer in place so the deploy workflow has something
+# to call.
+#
+# What it deliberately does NOT do is carry any credential. The env file is
+# placed afterwards by scripts/place-credentials, over ssh, from the one file
+# on your machine -- so nothing secret is ever in this repository, in a Vultr
+# API call, or in the instance's user-data, which is readable from inside the
+# machine for its whole life.
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - curl
+  - ca-certificates
+  - debian-keyring
+  - debian-archive-keyring
+  - apt-transport-https
+  - ufw
+
+users:
+  # The app's own account. No shell, no home to speak of: it exists to own a
+  # database file and a process.
+  - name: flowers
+    system: true
+    shell: /usr/sbin/nologin
+    create_home: false
+
+  # The account the deploy workflow logs in as. Its key is the only credential
+  # GitHub Actions holds, and sudoers below is what bounds it.
+  - name: deploy
+    shell: /bin/bash
+    sudo: null
+    ssh_authorized_keys:
+      - "DEPLOY_PUBLIC_KEY_GOES_HERE"
+
+write_files:
+  # The deploy account may run exactly one command, with one of two arguments,
+  # without a password. It cannot become root generally.
+  - path: /etc/sudoers.d/mta-flowers-deploy
+    permissions: "0440"
+    content: |
+      deploy ALL=(root) NOPASSWD: /usr/local/sbin/mta-flowers-install apply
+      deploy ALL=(root) NOPASSWD: /usr/local/sbin/mta-flowers-install rollback
+
+  # Password authentication off, root login off. The instance is key-only.
+  #
+  # Port 22 is open in the firewall rather than opened per-deploy. Closing it
+  # would need a Vultr API key in CI, and a Vultr key is account-wide and
+  # full-access -- trading a real credential for a closed port on a host with
+  # nothing to guess is the wrong way round.
+  - path: /etc/ssh/sshd_config.d/99-mta-flowers.conf
+    permissions: "0644"
+    content: |
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PermitRootLogin prohibit-password
+      X11Forwarding no
+
+      Match User deploy
+        AllowTcpForwarding no
+        X11Forwarding no
+        PermitTunnel no
+
+  - path: /etc/mta-flowers.env
+    permissions: "0600"
+    owner: root:root
+    content: |
+      # Placed here by scripts/place-credentials. This file is a stub so the
+      # unit can start; without the real values the app refuses and says so.
+      LISTEN_ADDR=127.0.0.1:8080
+      DATABASE_PATH=/var/lib/mta-flowers/flowers.db
+
+runcmd:
+  - [mkdir, -p, /var/lib/mta-flowers, /var/log/caddy]
+  - [chown, "flowers:flowers", /var/lib/mta-flowers]
+  - [chmod, "0750", /var/lib/mta-flowers]
+
+  # Caddy from its own repository, because the distribution package lags and
+  # this needs current ACME behaviour.
+  - bash -c 'curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/gpg.key | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg'
+  - bash -c 'curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt | tee /etc/apt/sources.list.d/caddy-stable.list'
+  - [apt-get, update]
+  - [apt-get, install, -y, caddy]
+
+  - [ufw, allow, "22/tcp"]
+  - [ufw, allow, "80/tcp"]
+  - [ufw, allow, "443/tcp"]
+  - [ufw, --force, enable]
+
+  - [systemctl, restart, ssh]
