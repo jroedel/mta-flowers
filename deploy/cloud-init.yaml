@@ -73,6 +73,23 @@ write_files:
         X11Forwarding no
         PermitTunnel no
 
+  # The installer, inlined by scripts/render-cloud-init from
+  # deploy/mta-flowers-install so there is one source of truth.
+  #
+  # It has to be here rather than arriving in the first bundle, because the
+  # installer is the only thing that unpacks a bundle: without a copy at first
+  # boot the first deploy scps its tarball to a machine with nothing able to
+  # open it, and fails with "command not found". That is exactly how the first
+  # deploy of this project failed.
+  #
+  # Every deploy after this one replaces this file from the bundle, so the
+  # copy here cannot drift from git for longer than one deploy.
+  - path: /usr/local/sbin/mta-flowers-install
+    permissions: "0755"
+    owner: root:root
+    content: |
+INSTALLER_GOES_HERE
+
   - path: /etc/mta-flowers.env
     permissions: "0600"
     owner: root:root
