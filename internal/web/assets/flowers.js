@@ -5,23 +5,49 @@
  * to a page we do not control and loaded by guests on hotel wifi on their way
  * to Mass. Every byte here is one somebody waits for.
  *
- * The page provides two globals through Squarespace's header injection:
+ * It works out where its own API is, from the URL it was loaded from, so the
+ * only thing the Squarespace page needs is the div and this script tag.
  *
- *   window.FLOWERS_API       the base URL of this server, with a trailing /
- *   window.FLOWERS_EVENT_ID  the event, for the operator's own reference
+ * It did not, at first. Last year's design set window.FLOWERS_API in
+ * Squarespace's Page Header Code Injection, and this file kept that name so
+ * the guide already written for it would stay true. But that makes the setup
+ * two snippets saved in two different places, and when the header one does not
+ * take, the widget renders "not configured yet" on the live site with nothing
+ * to say why. That happened on the first attempt. A script already knows where
+ * it came from; asking somebody to tell it a second time is a step that can
+ * only fail.
  *
- * Both names are last year's, deliberately: the setup guide already written
- * for them stays true and the only edit on the Squarespace side is two strings.
+ * window.FLOWERS_API is still honoured if it is set, so an existing page that
+ * has the old header block keeps working and can point somewhere else.
  */
 (function () {
   "use strict";
 
-  var api = (window.FLOWERS_API || "").replace(/\/+$/, "");
   var mount = document.getElementById("flowers-widget");
-
   if (!mount) return;
+
+  var api = (window.FLOWERS_API || "").replace(/\/+$/, "") || ownOrigin();
+
+  /* Where this script was served from, minus the filename.
+   *
+   * document.currentScript is the direct answer and is set for a deferred
+   * classic script like this one. The scan is for the cases where it is not --
+   * a module, or a tag somebody moved -- and looks for our own filename rather
+   * than assuming a position among the page's other scripts. */
+  function ownOrigin() {
+    var me = document.currentScript;
+    if (!me || !me.src) {
+      var all = document.getElementsByTagName("script");
+      for (var i = all.length - 1; i >= 0; i--) {
+        if (all[i].src && all[i].src.indexOf("/flowers.js") !== -1) { me = all[i]; break; }
+      }
+    }
+    if (!me || !me.src) return "";
+    return me.src.replace(/\/flowers\.js(\?.*)?$/, "");
+  }
+
   if (!api) {
-    mount.textContent = "The flowers widget is not configured yet.";
+    mount.textContent = "The flowers widget could not work out where to sign people up.";
     return;
   }
 

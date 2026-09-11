@@ -122,10 +122,18 @@ func (s *Server) withSecurityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 
-		// A magic link arrives as a query string. Without this, the first
-		// outbound request from the page it lands on carries that token in the
-		// Referer header to somebody else's server.
-		w.Header().Set("Referrer-Policy", "no-referrer")
+		// A magic link arrives as a query string, and without a policy the
+		// first outbound request from the page it lands on would carry that
+		// token to somebody else's server in the Referer header.
+		//
+		// same-origin, not no-referrer. no-referrer keeps the token in just
+		// the same way, but it also makes Firefox send "Origin: null" on a
+		// same-origin form post and send no Referer to correlate it with --
+		// which left sameOrigin with nothing true to look at, and returned
+		// "This form was not submitted from the flowers page" to an organiser
+		// signing in on the real page. same-origin still sends nothing to
+		// anybody else.
+		w.Header().Set("Referrer-Policy", "same-origin")
 
 		next.ServeHTTP(w, r)
 	})
@@ -205,15 +213,39 @@ func (s *Server) allowOrigin(w http.ResponseWriter, r *http.Request) {
 // post from carrying it. This is the second lock: it costs one header read,
 // and it means a future change to the cookie's attributes cannot silently
 // remove the only protection.
+//
+// It reads three headers because no one of them is present everywhere, and
+// getting this wrong locks out the administrator rather than an attacker.
+// That is not hypothetical -- the first version compared Origin alone and
+// refused Firefox, which sends the literal string "null" for a same-origin
+// form post when the page carries a strict Referrer-Policy. See the
+// Referrer-Policy comment in withSecurityHeaders.
 func (s *Server) sameOrigin(r *http.Request) bool {
-	origin := r.Header.Get("Origin")
-	if origin == "" {
-		// Some browsers omit Origin on a same-origin form post. Fall back to
-		// Referer, and accept the request only if one of them agrees.
-		ref := r.Header.Get("Referer")
-		return ref == "" || strings.HasPrefix(ref, s.cfg.PublicURL+"/")
+	// Sec-Fetch-Site is set by the browser and is on the forbidden-header
+	// list, so a page cannot forge it. Where it exists it is the best answer
+	// available, and it is the one header that was correct in the case above.
+	switch r.Header.Get("Sec-Fetch-Site") {
+	case "same-origin", "none": // "none" is a typed URL or a bookmark
+		return true
+	case "same-site", "cross-site":
+		return false
 	}
-	return strings.EqualFold(origin, s.cfg.PublicURL)
+
+	// Older browsers. "null" is not an origin -- it is a browser declining to
+	// name one -- so it must not be compared as though it were.
+	if origin := r.Header.Get("Origin"); origin != "" && origin != "null" {
+		return strings.EqualFold(origin, s.cfg.PublicURL)
+	}
+
+	if ref := r.Header.Get("Referer"); ref != "" {
+		return strings.HasPrefix(ref, s.cfg.PublicURL+"/")
+	}
+
+	// No usable signal at all. Accepting is the right call: a browser this old
+	// omits all three on an ordinary same-origin post, the session cookie is
+	// still SameSite=Lax, and the alternative is an organiser who simply
+	// cannot sign in and has no way to find out why.
+	return true
 }
 
 func (s *Server) isAdminEmail(email string) bool {
