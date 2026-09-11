@@ -334,3 +334,16 @@ func mustAffectOne(res sql.Result, message string) error {
 	}
 	return nil
 }
+
+// CommitmentByBrowser returns this browser's active commitment, so the widget
+// can greet somebody who has already signed up by name. It reports
+// sql.ErrNoRows when there is none, which is the ordinary case.
+func (s *Store) CommitmentByBrowser(ctx context.Context, eventID, browserToken string) (Commitment, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return Commitment{}, fmt.Errorf("starting the transaction: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // read-only
+
+	return commitmentByBrowser(ctx, tx, eventID, browserToken)
+}

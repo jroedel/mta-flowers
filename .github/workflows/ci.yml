@@ -1,0 +1,82 @@
+# Tests, lint, and the two checks that only fail on the server.
+#
+# The actions are pinned to a commit, with the release in a comment, rather
+# than to a tag. A tag is a pointer somebody else holds: the owner of an action
+# can move v7 to any commit and this repository would run it on the next push,
+# with the deploy key in reach. A commit is a hash of what will run.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          # From the go directive, so there is one place that says which Go
+          # this is built with.
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test
+        run: go test -race ./...
+
+      - name: Lint
+        run: |
+          go vet ./...
+          out=$(gofmt -s -l .)
+          if [ -n "$out" ]; then
+            echo "not gofmt-clean:"; echo "$out"; exit 1
+          fi
+
+      - name: Staticcheck
+        uses: dominikh/staticcheck-action@024238d2898c874f26d723e7d0ff4308c35589a2 # v1.4.0
+        with:
+          version: "2025.1.1"
+          install-go: false
+
+      # The widget is plain JavaScript with no build step, so nothing else
+      # would notice a syntax error until a guest opened the page and the
+      # button did not appear. The runner has node; the development machine
+      # this was written on did not.
+      - name: Check the widget script parses
+        run: node --check internal/web/assets/flowers.js
+
+      - name: Vulnerability scan
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  static-binary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # This is the failure that does not show up until the binary is on the
+      # server: an ordinary build links against the runner's glibc and dies
+      # with "GLIBC_2.xx not found" on a machine with a different one.
+      - name: Build and prove it is static
+        run: |
+          make release GOOS=linux GOARCH=amd64
+          file mta-flowers-linux-amd64
+          file mta-flowers-linux-amd64 | grep -q 'statically linked' \
+            || { echo "REFUSING: the binary is dynamically linked"; exit 1; }

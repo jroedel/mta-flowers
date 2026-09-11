@@ -1,0 +1,37 @@
+# Caddy holds the certificate and forwards to the app on loopback.
+#
+# The hostname is a placeholder. The deploy workflow substitutes the
+# PUBLIC_HOSTNAME repository variable into it, because a repository is a poor
+# place for one deployment's domain name -- and it fails the build if the
+# placeholder survives, so a bad substitution cannot ship silently.
+
+flowers.example.org {
+	encode gzip
+
+	# The app is the only backend. It listens on loopback and is not reachable
+	# from outside this machine, so Caddy is the only way in and TLS is not
+	# optional anywhere.
+	#
+	# Caddy APPENDS the real client address to X-Forwarded-For rather than
+	# replacing it, so a request arriving with a header of its own produces
+	# "whatever-they-claimed, the-real-address". That is why the app reads the
+	# LAST entry and not the first: the last one is the only one Caddy wrote.
+	reverse_proxy 127.0.0.1:8080
+
+	header {
+		# HSTS. The widget is loaded over https from a Squarespace page that is
+		# itself https, so there is no http path to break.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		-Server
+	}
+
+	# To the journal, beside the app's own lines, so one journalctl answers
+	# "what happened" instead of two places needing to be correlated. It also
+	# means `caddy validate` can run on a laptop -- with a file output it tries
+	# to open the file and fails anywhere but the server, which would make this
+	# unverifiable exactly where verification is cheap.
+	log {
+		output stderr
+	}
+}

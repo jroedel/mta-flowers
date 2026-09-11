@@ -1,0 +1,62 @@
+[Unit]
+Description=Flowers for the Blessed Mother
+Documentation=https://github.com/jroedel/mta-flowers
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=flowers
+Group=flowers
+
+# The credentials. Systemd reads this before dropping privileges, so it stays
+# root-owned and 0600 -- the app's own user cannot read it, which is one fewer
+# thing a bug in the app can disclose.
+EnvironmentFile=/etc/mta-flowers.env
+
+WorkingDirectory=/var/lib/mta-flowers
+ExecStart=/usr/local/bin/mta-flowers
+
+Restart=always
+RestartSec=2
+
+# systemd waits this long for a graceful shutdown before SIGKILL. The app
+# allows itself 15s to finish the request in flight, so this is deliberately
+# longer -- otherwise a deploy could kill a commitment mid-write.
+TimeoutStopSec=30
+
+# Hardening. This process needs to read one env file, write one database, and
+# make outbound TCP to the mail server. Everything else is closed.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RemoveIPC=true
+
+# The one writable path.
+ReadWritePaths=/var/lib/mta-flowers
+
+# AF_INET for the mail server and the listener; AF_UNIX because the resolver
+# uses it.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+CapabilityBoundingSet=
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

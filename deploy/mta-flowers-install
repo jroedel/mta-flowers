@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+#
+# The server side of a deploy. The workflow scps a bundle to /home/deploy and
+# then runs, over ssh:
+#
+#     sudo /usr/local/sbin/mta-flowers-install apply
+#
+# apply    unpack the bundle, keep the running binary, restart, and health
+#          check on loopback -- rolling back by itself if it does not answer
+# rollback put the kept binary back and restart
+#
+# The health check is the point. A deploy that replaces the binary and walks
+# away is a deploy that can leave the widget dead during the one month it has
+# to work, and nobody would know until a guest pressed the button.
+
+set -euo pipefail
+
+bundle=/home/deploy/deploy.tar.gz
+staging=/var/lib/mta-flowers/.staging
+binary=/usr/local/bin/mta-flowers
+previous=/var/lib/mta-flowers/.previous-binary
+health=http://127.0.0.1:8080/healthz
+
+log() { printf '%s  %s\n' "$(date -Is)" "$*"; }
+
+wait_until_healthy() {
+	# Twenty attempts at half a second. The app opens a SQLite file and binds a
+	# port; if it is not answering in ten seconds it is not going to.
+	for _ in $(seq 1 20); do
+		if curl -fsS --max-time 2 "$health" >/dev/null 2>&1; then
+			return 0
+		fi
+		sleep 0.5
+	done
+	return 1
+}
+
+apply() {
+	test -f "$bundle" || { log "no bundle at $bundle"; exit 1; }
+
+	rm -rf "$staging"
+	mkdir -p "$staging"
+	tar xzf "$bundle" -C "$staging"
+
+	test -x "$staging/mta-flowers" || { log "the bundle has no executable"; exit 1; }
+
+	# Kept before anything is replaced, so rollback has something to go back
+	# to even if this script fails halfway.
+	if [ -x "$binary" ]; then
+		cp -a "$binary" "$previous"
+		log "kept the running binary"
+	fi
+
+	install -m 0755 "$staging/mta-flowers" "$binary"
+	install -m 0644 "$staging/mta-flowers.service" /etc/systemd/system/mta-flowers.service
+	install -m 0644 "$staging/Caddyfile" /etc/caddy/Caddyfile
+
+	# This script replaces itself, so the copy cloud-init wrote at first boot
+	# cannot drift from what is in git.
+	install -m 0755 "$staging/mta-flowers-install" /usr/local/sbin/mta-flowers-install
+
+	systemctl daemon-reload
+	systemctl restart mta-flowers
+	log "restarted"
+
+	if ! wait_until_healthy; then
+		log "the new binary does not answer $health -- rolling back"
+		rollback
+		exit 1
+	fi
+
+	# Caddy last, and reloaded rather than restarted, so a certificate is not
+	# re-negotiated on every deploy.
+	if ! caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1; then
+		log "the new Caddyfile does not parse; leaving the running config alone"
+		exit 1
+	fi
+	systemctl reload caddy || systemctl restart caddy
+
+	rm -rf "$staging" "$bundle"
+	log "deployed, healthy"
+}
+
+rollback() {
+	test -x "$previous" || { log "there is no previous binary to go back to"; exit 1; }
+
+	install -m 0755 "$previous" "$binary"
+	systemctl restart mta-flowers
+
+	if wait_until_healthy; then
+		log "rolled back, healthy"
+	else
+		log "rolled back and it is STILL not answering; look at: journalctl -u mta-flowers -n 50"
+		exit 1
+	fi
+}
+
+case "${1:-}" in
+	apply)    apply ;;
+	rollback) rollback ;;
+	*)        echo "usage: $0 apply|rollback" >&2; exit 2 ;;
+esac
