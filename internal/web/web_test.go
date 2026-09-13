@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -31,7 +32,6 @@ func newServer(t *testing.T) http.Handler {
 		AllowedOrigins:   []string{squarespace},
 		AdminEmails:      []string{"frjeff@schoenstatt.us"},
 		FallbackPassword: "a-test-password",
-		NotifyRecipients: []string{"organiser@example.org"},
 	}, discardLogger())
 	if err != nil {
 		t.Fatalf("building the server: %v", err)
@@ -474,5 +474,109 @@ func TestTheWidgetFindsItsOwnApi(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("the widget no longer works out its own origin: missing %q", want)
 		}
+	}
+}
+
+// signIn returns a session cookie by way of the fallback password, which is
+// the one route in that needs no mail.
+func signIn(t *testing.T, h http.Handler) *http.Cookie {
+	t.Helper()
+
+	form := "email=frjeff@schoenstatt.us&password=a-test-password"
+	r := httptest.NewRequest(http.MethodPost, "/admin/password", strings.NewReader(form))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set("Origin", "https://flowers.schoenstatt.link")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+
+	for _, c := range w.Result().Cookies() {
+		if c.Name == "flowers_admin" {
+			return c
+		}
+	}
+	t.Fatalf("signing in set no session cookie: %d %s", w.Code, w.Body)
+	return nil
+}
+
+func adminPost(t *testing.T, h http.Handler, session *http.Cookie, path, form string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	r.Header.Set("Origin", "https://flowers.schoenstatt.link")
+	r.AddCookie(session)
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	return w
+}
+
+func dashboard(t *testing.T, h http.Handler, session *http.Cookie) string {
+	t.Helper()
+
+	r := httptest.NewRequest(http.MethodGet, "/admin/dashboard", nil)
+	r.AddCookie(session)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("the dashboard answered %d", w.Code)
+	}
+	return w.Body.String()
+}
+
+// Who is told is the open question in docs/scope.md, and the whole point of
+// moving it here is that answering it is not a deploy. The saved list must
+// therefore come back on the page, which is the only place anybody can check
+// what it now is.
+func TestTheNotificationListIsEditedOnThePage(t *testing.T) {
+	h := newServer(t)
+	session := signIn(t, h)
+
+	w := adminPost(t, h, session, "/admin/recipients",
+		"recipients="+url.QueryEscape("sister@example.org\nfrjeff@schoenstatt.us"))
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("saving the list answered %d: %s", w.Code, w.Body)
+	}
+
+	body := dashboard(t, h, session)
+	for _, want := range []string{"sister@example.org", "frjeff@schoenstatt.us"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the dashboard does not show %q after it was saved", want)
+		}
+	}
+}
+
+// The refusal goes back to the form with the reason on it, rather than to an
+// error page an organiser cannot act on.
+func TestABadAddressComesBackToTheFormWithTheReason(t *testing.T) {
+	h := newServer(t)
+	session := signIn(t, h)
+
+	w := adminPost(t, h, session, "/admin/recipients", "recipients=sister")
+
+	loc := w.Header().Get("Location")
+	if !strings.HasPrefix(loc, "/admin/dashboard?problem=") {
+		t.Fatalf("a bad address went to %q, want the dashboard with a problem", loc)
+	}
+	if !strings.Contains(loc, "sister") {
+		t.Errorf("the problem does not name the entry at fault: %q", loc)
+	}
+}
+
+// The notification list is not a way in. Changing it without a session would
+// mean anybody on the internet could redirect the parish's notifications to
+// themselves.
+func TestTheNotificationListCannotBeChangedWithoutASession(t *testing.T) {
+	h := newServer(t)
+
+	r := httptest.NewRequest(http.MethodPost, "/admin/recipients",
+		strings.NewReader("recipients=stranger@example.org"))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+
+	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "/admin" {
+		t.Fatalf("an unauthenticated change answered %d to %q", w.Code, w.Header().Get("Location"))
 	}
 }

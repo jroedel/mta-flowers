@@ -190,16 +190,3 @@ func cmpOr(a, b string) string {
 	}
 	return b
 }
-
-// Recipients splits a comma-separated list from the environment, dropping
-// blanks and spaces. An empty list is a legitimate answer: it means nobody
-// asked to be told.
-func Recipients(raw string) []string {
-	var out []string
-	for part := range strings.SplitSeq(raw, ",") {
-		if addr := strings.TrimSpace(part); addr != "" {
-			out = append(out, addr)
-		}
-	}
-	return out
-}

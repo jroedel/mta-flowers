@@ -44,6 +44,7 @@ replaced is the hosting, not the design.
 | Notification email per commitment | to a few named people, on both commit and cancel |
 | Admin sign-in by magic link | no password to set, lose or share; see below |
 | Admin: change the date, reset the count, remove duplicates | the three things that actually go wrong during an event |
+| Admin: change who is notified | the addresses were never going to be known before the first deploy |
 
 ### Out of scope
 
@@ -141,6 +142,19 @@ Three jobs, named because they are the three that go wrong during an event:
 **change the date**, **reset the count**, **delete duplicates**. Two more come
 along for the ride: **see the list** — you cannot remove a duplicate you cannot
 see — and **download it as CSV**, which is how the list outlives the instance.
+
+A fourth is here because of the open question below rather than because of the
+event: **change who is notified**. `NOTIFY_RECIPIENTS` seeds a database that
+has never had a list and is then never consulted again, so adding an address in
+week three is a page and not a push to `main`. The list is capped at twenty,
+which is a guard against the arithmetic — everyone on it gets an email for
+every commitment — and not a limit anybody should meet.
+
+**`ADMIN_EMAILS` deliberately did not move with it.** It decides who may open
+these pages, so a page behind it cannot also be where it is edited: one
+borrowed session would otherwise be able to add an address, remove everybody
+else's, and keep the parish out of its own tool. Changing who may sign in still
+needs the server.
 
 All of it is pages in the browser. Nothing here needs a terminal; the only
 command-line work on this project is deploying and provisioning.
@@ -253,9 +267,13 @@ destroyed — that is the only copy.
 
 ## Open questions
 
-1. **Who receives the notifications?** "A few people" — the addresses, into
-   `NOTIFY_RECIPIENTS` in the kit. Also whether each wants every commitment or
-   a daily digest: at 100 commitments, per-commitment is 100 emails each.
+1. **Who receives the notifications?** "A few people" — the addresses, under
+   *Who is told* on the admin page, or into `NOTIFY_RECIPIENTS` in the kit to
+   have them there from the first start. No longer blocking: it is answerable
+   in the browser at any point, including during the event. Still open is
+   whether each wants every commitment or a daily digest: at 100 commitments,
+   per-commitment is 100 emails each, and only the digest half of that would
+   be new work.
 2. **Which addresses may sign in as admin?** Into `ADMIN_EMAILS`. Your own
    (`frjeff@schoenstatt.us`) is assumed to be one of them.
 3. **Is the goal still 100 people?** Last year's copy asked for 100.
