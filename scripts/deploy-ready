@@ -168,7 +168,7 @@ else
 	need SMTP_USERNAME  "the mailbox they are sent as"
 	need SMTP_PASSWORD  "without it no notification and no magic link is sent"
 	need MAIL_FROM      "the From: header; must stay on schoenstatt.link"
-	need NOTIFY_RECIPIENTS "nobody would be told when somebody commits"
+	need NOTIFY_RECIPIENTS "nobody is told when somebody commits until the admin page says who"
 	need ADMIN_EMAILS   "nobody could sign in to the admin pages"
 	need ADMIN_FALLBACK_PASSWORD "the way in on the day mail is down"
 	need PUBLIC_HOSTNAME "the hostname Caddy gets a certificate for"

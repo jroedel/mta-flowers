@@ -44,6 +44,28 @@
   </section>
 
   <section>
+    <h2>Who is told</h2>
+    <p class="sub">
+      One address per line. Everybody here gets an email each time somebody
+      signs up or cancels — so if we reach {{.Event.Goal}}, that is
+      {{.Event.Goal}} emails each. Leave it empty to tell nobody.
+    </p>
+    {{if and .MailWorking (not .Recipients)}}
+      <p class="problem">
+        Nobody is on this list, so nobody is being told when people sign up.
+        The list further down is still correct.
+      </p>
+    {{end}}
+    <form method="post" action="/admin/recipients" class="stack">
+      <label for="recipients">Email addresses</label>
+      <textarea id="recipients" name="recipients" rows="4"
+                autocapitalize="off" autocorrect="off" spellcheck="false"
+                placeholder="maria@example.org">{{.RecipientsValue}}</textarea>
+      <button type="submit">Save</button>
+    </form>
+  </section>
+
+  <section>
     <h2>Commitments <a class="quiet-link" href="/admin/export.csv">Download CSV</a></h2>
 
     {{if .Active}}

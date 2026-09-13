@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jroedel/mta-flowers/internal/mail"
@@ -229,16 +230,28 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		active = append(active, c)
 	}
 
+	recipients, err := s.store.NotifyRecipients(ctx)
+	if err != nil {
+		s.adminTrouble(w, "reading who is notified", err)
+		return
+	}
+
 	s.render(w, "dashboard.html", map[string]any{
-		"Event":       ev,
-		"DateValue":   ev.Date.Format(time.DateOnly),
-		"Active":      active,
-		"Removed":     removed,
-		"Duplicates":  duplicates,
-		"Count":       len(active),
-		"Notice":      r.URL.Query().Get("notice"),
-		"Problem":     r.URL.Query().Get("problem"),
+		"Event":      ev,
+		"DateValue":  ev.Date.Format(time.DateOnly),
+		"Active":     active,
+		"Removed":    removed,
+		"Duplicates": duplicates,
+		"Count":      len(active),
+		"Notice":     r.URL.Query().Get("notice"),
+		"Problem":    r.URL.Query().Get("problem"),
+
 		"MailWorking": s.mail.Configured(),
+		"Recipients":  recipients,
+		// One address per line in the textarea, which is how somebody reads a
+		// list of five addresses on a phone. The store accepts either that or
+		// the comma-separated form the credential file uses.
+		"RecipientsValue": strings.Join(recipients, "\n"),
 	})
 }
 
@@ -277,6 +290,43 @@ func (s *Server) handleSaveEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.back(w, r, "notice", "Saved.")
+}
+
+// handleSaveRecipients changes who is told about a commitment.
+//
+// This is the answer to the open question in docs/scope.md: the addresses were
+// never going to be known before the first deploy, and asking an organiser to
+// wait on a push to main for them is the sort of thing that ends with the
+// notifications simply never being turned on.
+//
+// The admin sign-in allowlist deliberately does not move here with it.
+// ADMIN_EMAILS decides who may open this page, so a page behind it cannot also
+// be where it is edited -- one borrowed session would then be able to add an
+// address, remove everybody else's, and keep the parish out of its own tool.
+// It stays in the environment, where changing it needs the server.
+func (s *Server) handleSaveRecipients(w http.ResponseWriter, r *http.Request) {
+	list, err := s.store.SaveNotifyRecipients(r.Context(), r.FormValue("recipients"))
+	if err != nil {
+		if invalid, ok := errors.AsType[store.InvalidRecipients](err); ok {
+			s.back(w, r, "problem", invalid.Message)
+			return
+		}
+		s.adminTrouble(w, "saving who is notified", err)
+		return
+	}
+
+	// The confirmation counts them back, because the mistake this form invites
+	// is a stray comma that silently merges two addresses into one entry, and
+	// a number is how somebody notices they typed four and got three.
+	switch len(list) {
+	case 0:
+		s.back(w, r, "notice", "Saved. Nobody will be emailed when somebody signs up.")
+	case 1:
+		s.back(w, r, "notice", "Saved. One person will be emailed when somebody signs up.")
+	default:
+		s.back(w, r, "notice", fmt.Sprintf(
+			"Saved. %d people will be emailed when somebody signs up.", len(list)))
+	}
 }
 
 func (s *Server) handleRemove(w http.ResponseWriter, r *http.Request) {

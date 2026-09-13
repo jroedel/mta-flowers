@@ -3,6 +3,7 @@ package store_test
 import (
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -349,5 +350,120 @@ func TestAnEmptyInstructionIsRefused(t *testing.T) {
 	err := s.SaveEvent(ctx, ev)
 	if _, ok := errors.AsType[store.InvalidEvent](err); !ok {
 		t.Fatalf("SaveEvent returned %v, want InvalidEvent", err)
+	}
+}
+
+// The list is typed by a person on a phone, so it has to survive the ways a
+// person types a list. Anything else is a form that refuses an organiser who
+// pasted three addresses out of an email.
+func TestARecipientListSurvivesTheWayPeopleTypeIt(t *testing.T) {
+	cases := map[string][]string{
+		"a@x.org":                {"a@x.org"},
+		"a@x.org,b@x.org":        {"a@x.org", "b@x.org"},
+		" a@x.org , b@x.org ":    {"a@x.org", "b@x.org"},
+		"a@x.org,,b@x.org,":      {"a@x.org", "b@x.org"},
+		"a@x.org\nb@x.org":       {"a@x.org", "b@x.org"},
+		"a@x.org\r\nb@x.org\r\n": {"a@x.org", "b@x.org"},
+		"Maria <m@x.org>":        {"m@x.org"},
+		"a@x.org, A@X.ORG":       {"a@x.org"},
+		"":                       nil,
+		"   ":                    nil,
+		"\n\n":                   nil,
+	}
+
+	for in, want := range cases {
+		got, err := store.ParseRecipients(in)
+		if err != nil {
+			t.Errorf("ParseRecipients(%q): %v", in, err)
+			continue
+		}
+		if !slices.Equal(got, want) {
+			t.Errorf("ParseRecipients(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+// The refusal has to name the entry at fault. "That is not valid" in front of
+// five addresses is a puzzle, and this is being read in a hurry.
+func TestAnAddressThatIsNotOneIsRefusedByName(t *testing.T) {
+	_, err := store.ParseRecipients("a@x.org\nnot an address\nb@x.org")
+
+	invalid, ok := errors.AsType[store.InvalidRecipients](err)
+	if !ok {
+		t.Fatalf("error = %v, want InvalidRecipients", err)
+	}
+	if !strings.Contains(invalid.Message, "not an address") {
+		t.Errorf("the message does not name the entry at fault: %q", invalid.Message)
+	}
+}
+
+func TestSavingTheListReplacesIt(t *testing.T) {
+	s := newStore(t)
+
+	if _, err := s.SaveNotifyRecipients(t.Context(), "a@x.org, b@x.org"); err != nil {
+		t.Fatalf("saving: %v", err)
+	}
+
+	got, err := s.NotifyRecipients(t.Context())
+	if err != nil {
+		t.Fatalf("reading: %v", err)
+	}
+	if want := []string{"a@x.org", "b@x.org"}; !slices.Equal(got, want) {
+		t.Fatalf("recipients = %v, want %v", got, want)
+	}
+
+	// Emptying it is a choice, not a failure: it means tell nobody.
+	if _, err := s.SaveNotifyRecipients(t.Context(), ""); err != nil {
+		t.Fatalf("emptying: %v", err)
+	}
+	if got, err := s.NotifyRecipients(t.Context()); err != nil || len(got) != 0 {
+		t.Errorf("recipients = %v, %v; want empty", got, err)
+	}
+}
+
+// The environment fills a database that has never had a list, and then stops
+// mattering. Otherwise an address removed on the admin page would come back at
+// the next deploy, which is a restart, and nobody would connect the two.
+func TestTheEnvironmentSeedsTheListOnceAndThenStopsMattering(t *testing.T) {
+	s := newStore(t)
+
+	got, err := s.SeedNotifyRecipients(t.Context(), "a@x.org")
+	if err != nil {
+		t.Fatalf("seeding: %v", err)
+	}
+	if want := []string{"a@x.org"}; !slices.Equal(got, want) {
+		t.Fatalf("after seeding = %v, want %v", got, want)
+	}
+
+	if _, err := s.SaveNotifyRecipients(t.Context(), "b@x.org"); err != nil {
+		t.Fatalf("saving over the seed: %v", err)
+	}
+
+	// The next start of the same binary with the same environment.
+	got, err = s.SeedNotifyRecipients(t.Context(), "a@x.org")
+	if err != nil {
+		t.Fatalf("seeding again: %v", err)
+	}
+	if want := []string{"b@x.org"}; !slices.Equal(got, want) {
+		t.Errorf("after a restart = %v, want %v -- the environment overwrote the admin page", got, want)
+	}
+}
+
+// An empty environment must write nothing rather than write an empty list. A
+// server started before the credential file is filled in would otherwise make
+// NOTIFY_RECIPIENTS permanently irrelevant.
+func TestAnEmptyEnvironmentLeavesTheListUnwritten(t *testing.T) {
+	s := newStore(t)
+
+	if _, err := s.SeedNotifyRecipients(t.Context(), ""); err != nil {
+		t.Fatalf("seeding with nothing: %v", err)
+	}
+
+	got, err := s.SeedNotifyRecipients(t.Context(), "a@x.org")
+	if err != nil {
+		t.Fatalf("seeding after a blank start: %v", err)
+	}
+	if want := []string{"a@x.org"}; !slices.Equal(got, want) {
+		t.Errorf("recipients = %v, want %v -- the blank start won", got, want)
 	}
 }

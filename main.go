@@ -50,6 +50,30 @@ func run() error {
 	}
 	defer st.Close()
 
+	// Who is told is a setting, not configuration: it is edited on the admin
+	// page, and NOTIFY_RECIPIENTS only fills a database that has never had a
+	// list. See store.SeedNotifyRecipients for why the environment stops
+	// mattering the moment an organiser saves one.
+	notify, err := st.SeedNotifyRecipients(ctx, cfg.notifyRecipients)
+	if err != nil {
+		// Not fatal. A mistyped credential file must not keep the button from
+		// working, and whatever is already saved on the admin page still
+		// stands -- but nothing else in the system would ever mention this,
+		// so it is a warning that names the value.
+		log.Warn("NOTIFY_RECIPIENTS could not be read and was ignored",
+			"value", cfg.notifyRecipients, "error", err)
+
+		if notify, err = st.NotifyRecipients(ctx); err != nil {
+			return err
+		}
+	}
+	if len(notify) == 0 {
+		// The same invisible failure as an unconfigured Sender: everything
+		// works and nobody hears about it.
+		log.Warn("nobody is on the notification list, so no one will be told when somebody commits",
+			"fix", "add addresses under \"Who is told\" on the admin page")
+	}
+
 	sender := mail.Sender{
 		Host:     cfg.smtpHost,
 		Port:     cfg.smtpPort,
@@ -92,7 +116,7 @@ func run() error {
 			"public", cfg.web.PublicURL,
 			"database", cfg.databasePath,
 			"admins", len(cfg.web.AdminEmails),
-			"notify", len(cfg.web.NotifyRecipients))
+			"notify", len(notify))
 
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errs <- fmt.Errorf("listening on %s: %w", cfg.listen, err)
@@ -146,7 +170,13 @@ type config struct {
 	smtpUsername string
 	smtpPassword string
 	mailFrom     string
-	web          web.Config
+
+	// notifyRecipients is only a seed for the first start of a fresh
+	// database, which is why it is here and not in web.Config: no handler
+	// reads it.
+	notifyRecipients string
+
+	web web.Config
 }
 
 // loadConfig reads the environment, which on the server is
@@ -164,12 +194,14 @@ func loadConfig() (config, error) {
 		smtpUsername: env("SMTP_USERNAME", ""),
 		smtpPassword: env("SMTP_PASSWORD", ""),
 		mailFrom:     env("MAIL_FROM", ""),
+
+		notifyRecipients: env("NOTIFY_RECIPIENTS", ""),
+
 		web: web.Config{
 			PublicURL:        publicURL,
 			AllowedOrigins:   splitList(env("ALLOWED_ORIGINS", "https://schoenstatt-austin.us,https://www.schoenstatt-austin.us")),
 			AdminEmails:      splitList(env("ADMIN_EMAILS", "")),
 			FallbackPassword: env("ADMIN_FALLBACK_PASSWORD", ""),
-			NotifyRecipients: mail.Recipients(env("NOTIFY_RECIPIENTS", "")),
 			EventName:        env("EVENT_NAME", "Feast Day Celebration"),
 		},
 	}

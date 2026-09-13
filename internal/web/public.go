@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -159,7 +160,7 @@ func (s *Server) handleCommit(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("counting after a commitment", "error", err)
 	}
 
-	s.notify(mail.Committed(c.Name, s.eventName(), c.CreatedAt, count))
+	s.notify(r.Context(), mail.Committed(c.Name, s.eventName(), c.CreatedAt, count))
 
 	st, err := s.currentState(r)
 	if err != nil {
@@ -209,7 +210,7 @@ func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("counting after a cancellation", "error", err)
 	}
 
-	s.notify(mail.Cancelled(c.Name, s.eventName(), time.Now(), count))
+	s.notify(r.Context(), mail.Cancelled(c.Name, s.eventName(), time.Now(), count))
 
 	st, err := s.currentState(r)
 	if err != nil {
@@ -252,11 +253,26 @@ func (s *Server) currentState(r *http.Request) (state, error) {
 
 // notify sends to the organisers, if there are any and mail is configured.
 // It never blocks the guest -- see mail.SendAsync.
-func (s *Server) notify(m mail.Message) {
-	if len(s.cfg.NotifyRecipients) == 0 {
+//
+// The list is read here rather than held in the config because it is edited on
+// the admin page, and an organiser who adds an address during the event means
+// the next commitment, not the next restart. It is one indexed row read on a
+// path that has already written one.
+//
+// A list that cannot be read costs the notification and nothing else. The
+// commitment is committed by the time this is called and the admin list is the
+// record of truth -- the button must never fail because mail did.
+func (s *Server) notify(ctx context.Context, m mail.Message) {
+	to, err := s.store.NotifyRecipients(ctx)
+	if err != nil {
+		s.log.Error("reading who to notify; nobody was told", "error", err)
 		return
 	}
-	m.To = s.cfg.NotifyRecipients
+	if len(to) == 0 {
+		return
+	}
+
+	m.To = to
 	s.mail.SendAsync(m)
 }
 

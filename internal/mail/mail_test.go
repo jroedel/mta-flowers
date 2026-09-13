@@ -8,31 +8,6 @@ import (
 	"github.com/jroedel/mta-flowers/internal/mail"
 )
 
-func TestRecipientsTolerateTheWayPeopleTypeLists(t *testing.T) {
-	cases := map[string][]string{
-		"a@x.org":             {"a@x.org"},
-		"a@x.org,b@x.org":     {"a@x.org", "b@x.org"},
-		" a@x.org , b@x.org ": {"a@x.org", "b@x.org"},
-		"a@x.org,,b@x.org,":   {"a@x.org", "b@x.org"},
-		"":                    nil,
-		"   ":                 nil,
-	}
-
-	for in, want := range cases {
-		got := mail.Recipients(in)
-		if len(got) != len(want) {
-			t.Errorf("Recipients(%q) = %v, want %v", in, got, want)
-			continue
-		}
-		for i := range got {
-			if got[i] != want[i] {
-				t.Errorf("Recipients(%q) = %v, want %v", in, got, want)
-				break
-			}
-		}
-	}
-}
-
 // The notification names the person and carries the running total, because the
 // total is the number organisers are actually watching.
 func TestTheNotificationSaysWhatHappenedAndHowManySoFar(t *testing.T) {

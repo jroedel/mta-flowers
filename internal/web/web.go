@@ -49,9 +49,6 @@ type Config struct {
 	// disables it.
 	FallbackPassword string
 
-	// NotifyRecipients hear about every commitment and cancellation.
-	NotifyRecipients []string
-
 	// EventName is what the notifications call the celebration.
 	EventName string
 }
@@ -108,6 +105,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /admin/dashboard", s.requireAdmin(s.handleDashboard))
 	mux.HandleFunc("POST /admin/event", s.requireAdmin(s.handleSaveEvent))
+	mux.HandleFunc("POST /admin/recipients", s.requireAdmin(s.handleSaveRecipients))
 	mux.HandleFunc("POST /admin/remove", s.requireAdmin(s.handleRemove))
 	mux.HandleFunc("POST /admin/restore", s.requireAdmin(s.handleRestore))
 	mux.HandleFunc("POST /admin/reset", s.requireAdmin(s.handleReset))
