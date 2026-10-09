@@ -2,7 +2,7 @@ module github.com/jroedel/mta-flowers
 
 // One version directive, no separate toolchain line, so CI's setup-go installs
 // exactly what is written here and the build logs name one Go rather than two.
-go 1.26.8
+go 1.26.9
 
 require modernc.org/sqlite v1.58.0
 
